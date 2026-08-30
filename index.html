@@ -95,6 +95,11 @@
   .sb-dots{ letter-spacing:2px; font-size:11px; }
   .sb-dot{color:var(--good);}
   .sb-dot.empty{color:var(--border);}
+  .sb-btn{
+    margin-left:auto; background:var(--panel-light); border:1px solid var(--border);
+    border-radius:8px; padding:3px 9px; color:var(--text); font-size:10px;
+    cursor:pointer;
+  }
 
   /* ---- status ticker (演出のみ、ゲームには影響しない) ---- */
   #tickerBar{
@@ -318,6 +323,26 @@
   .opt-btn:active{background:var(--border);}
   .opt-btn-disabled{ opacity:.45; color:var(--text-dim); cursor:not-allowed; }
   .choice-note{ color:var(--warn); font-size:11px; margin-top:8px; line-height:1.5; }
+
+  /* ---- 指令準備室（事前対策） ---- */
+  .prep-section{ margin-top:14px; }
+  .prep-section h3{ margin:0 0 6px; font-size:13px; color:var(--text); }
+  .prep-note{ color:var(--text-dim); font-size:11px; line-height:1.5; margin:0 0 6px; }
+  .prep-row{
+    display:flex; align-items:center; gap:8px; padding:6px 0;
+    border-bottom:1px solid #ffffff10; font-size:12px;
+  }
+  .prep-row:last-child{ border-bottom:none; }
+  .prep-line-tag{ flex:0 0 auto; font-weight:800; min-width:70px; }
+  .prep-status{ flex:1 1 auto; color:var(--text-dim); font-size:11px; }
+  .prep-action-btn{
+    flex:0 0 auto; padding:5px 10px; border-radius:8px; border:1px solid var(--border);
+    background:var(--panel); color:var(--text); font-size:11px; cursor:pointer;
+  }
+  .prep-action-btn:disabled{ opacity:.4; cursor:not-allowed; }
+  .prep-weather-low{ color:var(--good); }
+  .prep-weather-mid{ color:var(--warn); }
+  .prep-weather-high{ color:var(--danger); font-weight:800; }
   .primary-btn{
     display:block; width:100%; padding:12px; margin-top:14px; border:none;
     border-radius:10px; background:linear-gradient(180deg,#5fd0ff,#2196c9);
@@ -431,6 +456,7 @@
     <div class="sb-item"><span class="sb-label">連続成功</span><span class="sb-value" id="comboVal">0</span></div>
     <div class="sb-item"><span class="sb-label">予備車両</span><span class="sb-dots" id="spareTrainDots"></span></div>
     <div class="sb-item"><span class="sb-label">予備要員</span><span class="sb-dots" id="spareCrewDots"></span></div>
+    <button id="prepOpenBtn" class="sb-item sb-btn">🗂️ 事前対策</button>
   </div>
 
   <div id="deptGridTop" class="dept-row"></div>
@@ -467,7 +493,31 @@
       <p>②「より慎重な対応（見合わせ等）」は正解でなくても安全な場合があります。ただし信頼度は少し下がります。</p>
       <p>③「予備車両」「交代要員」はステータスバーに表示された在庫制です。使うと減り、時間経過で回復します。在庫切れで正解が選べない場合は、その部署だけ信頼度減少で済みます。</p>
       <p>④ノーミスで対応が続くとコンボボーナスでスコアが伸びます。</p>
+      <p>⑤ステータスバーの「事前対策」から指令準備室を開けます。天気予報の確認、路線の点検指示、乗務員の先回り配置など、トラブルが起きる前に手を打てます。</p>
       <button class="primary-btn" id="tutorialTipsCloseBtn">わかった、運行を続ける</button>
+    </div>
+  </div>
+
+  <!-- 指令準備室（事前対策）：天気予報の確認・路線点検・乗務員の先回り配置 -->
+  <div class="overlay" id="prepOverlay" hidden>
+    <div class="card">
+      <h2>指令準備室</h2>
+      <p>手が空いている今のうちに、路線ごとの予防策を打っておきましょう。</p>
+      <div class="prep-section">
+        <h3>🌦️ 気象予報</h3>
+        <div id="prepWeatherList"></div>
+      </div>
+      <div class="prep-section">
+        <h3>🔍 路線点検</h3>
+        <p class="prep-note">予備車両を1つ使い、45秒間その路線の次のトラブルを安全化します（信頼度減少のみで即ゲームオーバーにしない）。</p>
+        <div id="prepInspectList"></div>
+      </div>
+      <div class="prep-section">
+        <h3>🧑‍✈️ 乗務員の先回り配置</h3>
+        <p class="prep-note">予備要員を1つ使い、その路線で次に乗務員案件が出た時に自動対応させます。</p>
+        <div id="prepCrewList"></div>
+      </div>
+      <button class="primary-btn secondary-btn" id="prepCloseBtn">閉じる</button>
     </div>
   </div>
 
@@ -539,6 +589,11 @@
   // 「予備車両に交換する」「交替要員を手配する」は有限リソース扱い。
   // 在庫が尽きると選択肢自体が選べなくなる。
   const RESOURCE_FOR_OPTION = { arrange:"spareCrew", swap:"spareTrain" };
+
+  // 事前対策（指令準備室）関連の定数
+  const WEATHER_TROUBLE_IDS = new Set(["storm","lightning","trackside_fire"]);
+  const LINE_INSPECT_DURATION_MS = 45000; // 点検効果の持続時間
+  const WEATHER_TICK_MS = 4000;           // 気象警戒度が変動する間隔
   const RADIO_PRAISES = [
     "お疲れ様です、対応確認しました。",
     "いいペースですね、この調子で。",
@@ -962,7 +1017,11 @@
     rushHadMistake:false,   // ラッシュ中のトラブルで一度でもミスがあったか
     dailyMode:false,        // 本日の指令チャレンジ（デイリー）中か
     tapEffects:[],          // 電車タップ演出の一覧
-    trustWasCritical:false  // 信頼度が危険水準を下回ったことを既に警告したか
+    trustWasCritical:false, // 信頼度が危険水準を下回ったことを既に警告したか
+    weatherTrend:[],        // 路線ごとの気象トラブル警戒度（0〜1）。ゆっくり変動する
+    lastWeatherTickAt:0,
+    lineInspectedUntil:[],  // 点検済みの効果が続く終了時刻（路線ごと）
+    crewPreAssigned:new Set() // 乗務員を先回り配置した路線（次のcrew案件で自動対応）
   };
 
   // 本日の指令チャレンジ（デイリー）用の擬似乱数。トラブル出現・路線選択・
@@ -1062,7 +1121,13 @@
     dispatchSummary:document.getElementById("dispatchSummary"),
     dispatchConfirmBtn:document.getElementById("dispatchConfirmBtn"),
     soundToggleBtn:document.getElementById("soundToggleBtn"),
-    helpBtn:document.getElementById("helpBtn")
+    helpBtn:document.getElementById("helpBtn"),
+    prepOpenBtn:document.getElementById("prepOpenBtn"),
+    prepOverlay:document.getElementById("prepOverlay"),
+    prepCloseBtn:document.getElementById("prepCloseBtn"),
+    prepWeatherList:document.getElementById("prepWeatherList"),
+    prepInspectList:document.getElementById("prepInspectList"),
+    prepCrewList:document.getElementById("prepCrewList")
   };
   const ctx = el.canvas.getContext("2d");
 
@@ -1163,11 +1228,16 @@
   function pickWeightedLine(troubleId){
     // 対応が不十分だった路線は、しばらく次のトラブルが起きやすくなる
     // （バタフライ効果）。リスクは時間経過で減衰する。
-    // 加えて、路線ごとのrushBias（例：山手線は駆け込み乗車が起きやすい）も重ねる。
+    // 加えて、路線ごとのrushBias（例：山手線は駆け込み乗車が起きやすい）や、
+    // 天気予報（気象トラブルの警戒度）も重ねる。天気予報は指令準備室で
+    // 確認できるようにしてあるので、事前に警戒度の高い路線が分かる。
     const weights = LINES.map((ln,i)=>{
       const base = 1 + (state.lineRisk[i]||0)*0.6;
       const bias = (troubleId && ln.rushBias && ln.rushBias[troubleId]) || 1;
-      return base * bias;
+      const weatherBias = (troubleId && WEATHER_TROUBLE_IDS.has(troubleId))
+        ? (1 + (state.weatherTrend[i]||0)*2)
+        : 1;
+      return base * bias * weatherBias;
     });
     const total = weights.reduce((a,b)=>a+b, 0);
     let r = rand()*total;
@@ -1223,11 +1293,33 @@
     const timeLimit = def.timeLimit * (LINES[lineIdx].timeLimitMult || 1);
     const instance = { uid:"t"+(state.uidSeq++), def, variant, lineIdx, timeLimit, startedAt:nowMs, choices:{} };
     def.depts.forEach(dep=>state.reserved.set(dep, instance.uid));
+
+    // 事前対策①点検済みの路線：この案件はどう対応してもゲームオーバーには
+    // ならない（信頼度減少のみ）よう保護する
+    if(nowMs < (state.lineInspectedUntil[lineIdx]||0)){
+      instance.forcedSafeDepts = new Set(def.critical);
+      instance.wasInspected = true;
+    }
+    // 事前対策②乗務員を先回り配置した路線：crew案件があれば即座に正解を
+    // 自動対応し、その部署の判断待ちを発生させない
+    if(state.crewPreAssigned.has(lineIdx) && def.depts.includes("crew")){
+      instance.choices.crew = variant.correct.crew;
+      if(state.reserved.get("crew") === instance.uid) state.reserved.delete("crew");
+      state.crewPreAssigned.delete(lineIdx);
+      instance.wasCrewPreAssigned = true;
+    }
+
     state.active.push(instance);
     showCutin(def, LINES[lineIdx], variant);
     playSfx("horn", 0.55);
     if(LINES[lineIdx].id === "shinkansen") playSfx("shinkansenRunning", 0.4);
     if(state.tutorialActive) state.tutorialTroubleUid = instance.uid;
+    if(instance.wasInspected || instance.wasCrewPreAssigned){
+      showResultToast(
+        instance.wasCrewPreAssigned ? "🧑‍✈️ 先回り配置していた乗務員が即対応" : "🔍 点検済み路線として保護中",
+        "warn"
+      );
+    }
     return instance;
   }
 
@@ -1583,6 +1675,61 @@
     }, 2200);
   }
 
+  // ============ 指令準備室（事前対策） ============
+  // トラブルが起きる前に打てる対策。予備リソースを「今すぐの保険」として
+  // 使うか「後で来る本当の緊急事態のために温存する」かの判断が生まれる。
+  function inspectLine(lineIdx){
+    if(state.resources.spareTrain <= 0) return;
+    state.resources.spareTrain--;
+    state.lineRisk[lineIdx] = Math.max(0, (state.lineRisk[lineIdx]||0) - 2);
+    state.lineInspectedUntil[lineIdx] = performance.now() + LINE_INSPECT_DURATION_MS;
+    playSfx("confirm", 0.5);
+    renderPrepPanel(performance.now());
+  }
+
+  function preAssignCrew(lineIdx){
+    if(state.resources.spareCrew <= 0) return;
+    if(state.crewPreAssigned.has(lineIdx)) return;
+    state.resources.spareCrew--;
+    state.crewPreAssigned.add(lineIdx);
+    playSfx("confirm", 0.5);
+    renderPrepPanel(performance.now());
+  }
+
+  function renderPrepPanel(nowMs){
+    el.prepWeatherList.innerHTML = LINES.map((ln,i)=>{
+      const v = state.weatherTrend[i]||0;
+      const level = v < 0.33 ? "低" : (v < 0.66 ? "中" : "高");
+      const cls = v < 0.33 ? "prep-weather-low" : (v < 0.66 ? "prep-weather-mid" : "prep-weather-high");
+      return '<div class="prep-row">'+
+        '<span class="prep-line-tag" style="color:'+ln.color+'">'+ln.name+'</span>'+
+        '<span class="prep-status '+cls+'">警戒度：'+level+'</span>'+
+      '</div>';
+    }).join("");
+
+    el.prepInspectList.innerHTML = LINES.map((ln,i)=>{
+      const until = state.lineInspectedUntil[i]||0;
+      const active = nowMs < until;
+      const remainSec = active ? Math.ceil((until-nowMs)/1000) : 0;
+      const disabled = active || state.resources.spareTrain<=0;
+      return '<div class="prep-row">'+
+        '<span class="prep-line-tag" style="color:'+ln.color+'">'+ln.name+'</span>'+
+        '<span class="prep-status">'+(active ? "点検効果中（残り"+remainSec+"秒）" : "未点検")+'</span>'+
+        '<button class="prep-action-btn" data-action="inspect" data-line="'+i+'"'+(disabled?" disabled":"")+'>点検する</button>'+
+      '</div>';
+    }).join("");
+
+    el.prepCrewList.innerHTML = LINES.map((ln,i)=>{
+      const active = state.crewPreAssigned.has(i);
+      const disabled = active || state.resources.spareCrew<=0;
+      return '<div class="prep-row">'+
+        '<span class="prep-line-tag" style="color:'+ln.color+'">'+ln.name+'</span>'+
+        '<span class="prep-status">'+(active ? "配置済み" : "未配置")+'</span>'+
+        '<button class="prep-action-btn" data-action="crew" data-line="'+i+'"'+(disabled?" disabled":"")+'>配置する</button>'+
+      '</div>';
+    }).join("");
+  }
+
   function handleTimeout(t){
     // 何も選ばなかった＝最悪のケースとして扱うため、安全な代替策では
     // なく本当に危険な選択肢を自動選択する（ただし在庫切れで正解自体が
@@ -1766,6 +1913,23 @@
     if(!state.lastRiskDecayAt || nowMs - state.lastRiskDecayAt > 9000){
       state.lastRiskDecayAt = nowMs;
       state.lineRisk = state.lineRisk.map(r=> r*0.8);
+    }
+
+    // 気象警戒度（天気予報）をゆっくりランダムウォークさせる。
+    // 指令準備室の天気予報タブで確認でき、実際の気象トラブルの
+    // 出現しやすさにも反映される（pickWeightedLine参照）
+    if(nowMs - state.lastWeatherTickAt > WEATHER_TICK_MS){
+      state.lastWeatherTickAt = nowMs;
+      state.weatherTrend = LINES.map((_,i)=>{
+        const v = (state.weatherTrend[i]||0) + (rand()-0.5)*0.25;
+        return Math.max(0, Math.min(1, v));
+      });
+    }
+    if(!el.prepOverlay.hidden){
+      if(!state.lastPrepRenderAt || nowMs - state.lastPrepRenderAt > 500){
+        state.lastPrepRenderAt = nowMs;
+        renderPrepPanel(nowMs);
+      }
     }
 
     // 路線が「危機状態」に入った/抜けた瞬間だけブレーキ音・停車音を鳴らす
@@ -2253,6 +2417,10 @@
     state.rushHadMistake = false;
     state.tapEffects = [];
     state.trustWasCritical = false;
+    state.weatherTrend = LINES.map(()=>rand());
+    state.lastWeatherTickAt = performance.now();
+    state.lineInspectedUntil = LINES.map(()=>0);
+    state.crewPreAssigned = new Set();
     scheduleRushEvents();
     stopAllSfx();
     updateAmbient();
@@ -2269,6 +2437,7 @@
     el.rushBanner.hidden = true;
     el.dispatchOverlay.classList.remove("show");
     el.dispatchOverlay.hidden = true;
+    el.prepOverlay.hidden = true;
   }
 
   function startGame(mode){
@@ -2292,6 +2461,25 @@
   // オーバーレイを開けるようにする（ゲーム進行自体は裏で継続する）
   el.helpBtn.addEventListener("click", ()=>{
     el.tutorialTipsOverlay.hidden = false;
+  });
+
+  el.prepOpenBtn.addEventListener("click", ()=>{
+    if(!state.running) return;
+    renderPrepPanel(performance.now());
+    el.prepOverlay.hidden = false;
+  });
+  el.prepCloseBtn.addEventListener("click", ()=>{
+    el.prepOverlay.hidden = true;
+  });
+  el.prepInspectList.addEventListener("click", (e)=>{
+    const btn = e.target.closest(".prep-action-btn");
+    if(!btn || btn.disabled) return;
+    inspectLine(Number(btn.dataset.line));
+  });
+  el.prepCrewList.addEventListener("click", (e)=>{
+    const btn = e.target.closest(".prep-action-btn");
+    if(!btn || btn.disabled) return;
+    preAssignCrew(Number(btn.dataset.line));
   });
 
   const bestScoreAtLoad = Number(localStorage.getItem("tc_bestScore")||0);
