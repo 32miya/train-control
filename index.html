@@ -332,6 +332,9 @@
   #bestScoreLine{
     font-size:12px; color:var(--warn); margin:-4px 0 10px; font-weight:700;
   }
+  #dailyBestLine{
+    font-size:12px; color:var(--accent); margin:-4px 0 10px; font-weight:700;
+  }
 
   /* ---- 新聞紙面風のゲームオーバー ---- */
   .newspaper-card{
@@ -374,6 +377,27 @@
     transform:rotate(-2deg);
   }
   #resultStatsLine{ font-size:11px; color:#6b5d45; margin-top:2px; }
+  #resultDailyNote{
+    font-size:11px; color:#1f5c8a; font-weight:800; margin-top:4px;
+  }
+  #resultBadges{
+    display:flex; flex-wrap:wrap; gap:6px; justify-content:center;
+    margin:10px 0 2px;
+  }
+  .badge-chip{
+    position:relative; display:inline-flex; align-items:center; gap:4px;
+    font-size:10px; font-weight:700; padding:4px 8px; border-radius:12px;
+    border:1px solid #b8a57599; background:#ffffff33; color:#8a7a5c;
+    opacity:.55;
+  }
+  .badge-chip.unlocked{
+    background:#2b2118; color:#ece0c4; border-color:#2b2118; opacity:1;
+  }
+  .badge-chip.new{ box-shadow:0 0 0 2px #7a1f1f; animation:combo-pop .4s ease-out; }
+  .badge-new-tag{
+    background:#7a1f1f; color:#fff; font-size:8px; font-weight:900;
+    padding:1px 4px; border-radius:6px; margin-left:2px;
+  }
 </style>
 </head>
 <body>
@@ -462,8 +486,10 @@
       <h2>指令室 - 運行管理ゲーム</h2>
       <p>あなたは総合指令所の指令員です。発生するトラブルに対し、各部署（輸送・信号・電力・運用・旅客）へ正しい対策を選び「指令発令」してください。判断を誤ると衝突・脱線・感電などの重大事故につながります。エンドレスで難易度は徐々に上昇します。</p>
       <div id="bestScoreLine" hidden></div>
+      <div id="dailyBestLine" hidden></div>
       <button class="primary-btn" id="startBtnFull">運行開始（フル路線・8路線）</button>
       <button class="primary-btn secondary-btn" id="startBtnLight">軽量モードで開始（3路線・易しめ）</button>
+      <button class="primary-btn secondary-btn" id="startBtnDaily">本日の指令に挑戦（<span id="dailyDateLabel"></span>）</button>
     </div>
   </div>
 
@@ -482,7 +508,9 @@
       <div class="stat-label">最終スコア</div>
       <div id="resultScore">0</div>
       <div id="resultStatsLine"></div>
+      <div id="resultDailyNote" hidden></div>
       <div id="bestScoreNote" hidden></div>
+      <div id="resultBadges"></div>
       <button class="primary-btn" id="retryBtn">もう一度指令する</button>
     </div>
   </div>
@@ -877,6 +905,38 @@
     RANK_TIERS.forEach(t=>{ if(score >= t.min) r = t; });
     return r;
   }
+
+  // 実績バッジ。スコア以外の短期目標を作るため、ラン単位の記録
+  // （コンボ・生存時間・ランク・ラッシュ完走）と、ゲームをまたいだ
+  // 累積記録（新幹線パーフェクト回数）の両方を対象にする。
+  // 一度解除したバッジはlocalStorageに残り、以後は再判定しない。
+  const BADGES = [
+    { id:"no_mistake_5min", icon:"🛡️", label:"無傷の名指令",
+      check:r=> r.survivalSec>=300 && r.dispatchCount>0 && r.perfectCount===r.dispatchCount },
+    { id:"combo10", icon:"🔥", label:"コンボマスター",
+      check:r=> r.maxCombo>=10 },
+    { id:"survive_10min", icon:"⏱️", label:"10分の壁",
+      check:r=> r.survivalSec>=600 },
+    { id:"rank_veteran", icon:"🎖️", label:"熟練指令員以上",
+      check:r=> r.rankIndex>=2 },
+    { id:"rush_perfect", icon:"⚡", label:"ラッシュ完全制圧",
+      check:r=> r.rushCleared },
+    { id:"shinkansen_master", icon:"🚄", label:"新幹線の達人",
+      check:r=> r.shinkansenPerfectTotal>=10 }
+  ];
+  function checkBadges(result){
+    const unlocked = new Set(JSON.parse(localStorage.getItem("tc_badges")||"[]"));
+    const newlyUnlocked = [];
+    BADGES.forEach(b=>{
+      if(!unlocked.has(b.id) && b.check(result)){
+        unlocked.add(b.id);
+        newlyUnlocked.push(b);
+      }
+    });
+    localStorage.setItem("tc_badges", JSON.stringify([...unlocked]));
+    return { unlocked, newlyUnlocked };
+  }
+
   const state = {
     running:false,
     startedAt:0,
@@ -891,13 +951,41 @@
     combo:0,
     resources:{ spareTrain:RESOURCE_MAX, spareCrew:RESOURCE_MAX, lastRegenAt:0 },
     lineRisk:[],           // 路線ごとの「トラブルが起きやすさ」加点（バタフライ効果）
-    stats:{ dispatchCount:0, perfectCount:0, totalResponseMs:0, minTrust:100 },
+    stats:{ dispatchCount:0, perfectCount:0, totalResponseMs:0, minTrust:100, maxCombo:0 },
     tutorialActive:false,
     dispatchQueue:[],       // 路線図に重ねて表示する指令発令確認の待ち行列
     dispatchOverlayUid:null,
     prevCritical:[],        // 前フレームの路線ごとの危機状態（ブレーキ/停車音の発火判定用）
-    rushEventDone:false     // 1ランに1回だけ発生する「ラッシュ」演出を出したか
+    rushSchedule:[],        // ラッシュ発生予定時刻（秒）のリスト。ラン開始時に揺らぎ付きで決定
+    rushEventsDone:0,       // 何回ラッシュを発生させたか
+    rushTroubleUids:new Set(), // ラッシュ発生時に生成したトラブルのuid（実績判定用）
+    rushHadMistake:false,   // ラッシュ中のトラブルで一度でもミスがあったか
+    dailyMode:false,        // 本日の指令チャレンジ（デイリー）中か
+    tapEffects:[]           // 電車タップ演出の一覧
   };
+
+  // 本日の指令チャレンジ（デイリー）用の擬似乱数。トラブル出現・路線選択・
+  // バリアント選択・ラッシュのタイミングなど「難易度に関わる乱数」だけを
+  // ここ経由にし、効果音のピッチ揺らぎなど演出専用の乱数はMath.random()の
+  // ままにしておく（デイリー以外のプレイでは従来通りMath.random()を使う）
+  let rngState = null;
+  function seedRng(seed){ rngState = (seed===null || seed===undefined) ? null : (seed>>>0); }
+  function rand(){
+    if(rngState === null) return Math.random();
+    rngState |= 0; rngState = (rngState + 0x6D2B79F5) | 0;
+    let t = Math.imul(rngState ^ (rngState >>> 15), 1 | rngState);
+    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  }
+  function hashStr(str){
+    let h = 0;
+    for(let i=0; i<str.length; i++){ h = (Math.imul(31,h) + str.charCodeAt(i)) | 0; }
+    return h >>> 0;
+  }
+  function todayKey(){
+    const d = new Date();
+    return d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,"0")+"-"+String(d.getDate()).padStart(2,"0");
+  }
 
   function makeTrains(){
     // 各路線に1〜2編成。東京駅(t=0)と終端(t=1)の両方で折り返す往復運転。
@@ -934,6 +1022,9 @@
     startOverlay:document.getElementById("startOverlay"),
     startBtnFull:document.getElementById("startBtnFull"),
     startBtnLight:document.getElementById("startBtnLight"),
+    startBtnDaily:document.getElementById("startBtnDaily"),
+    dailyDateLabel:document.getElementById("dailyDateLabel"),
+    dailyBestLine:document.getElementById("dailyBestLine"),
     bestScoreLine:document.getElementById("bestScoreLine"),
     gameOverOverlay:document.getElementById("gameOverOverlay"),
     resultReason:document.getElementById("resultReason"),
@@ -942,6 +1033,8 @@
     resultLineTag:document.getElementById("resultLineTag"),
     resultRank:document.getElementById("resultRank"),
     resultStatsLine:document.getElementById("resultStatsLine"),
+    resultDailyNote:document.getElementById("resultDailyNote"),
+    resultBadges:document.getElementById("resultBadges"),
     resultPhoto:document.getElementById("resultPhoto"),
     radarCanvas:document.getElementById("radarCanvas"),
     retryBtn:document.getElementById("retryBtn"),
@@ -1071,7 +1164,7 @@
       return base * bias;
     });
     const total = weights.reduce((a,b)=>a+b, 0);
-    let r = Math.random()*total;
+    let r = rand()*total;
     for(let i=0; i<weights.length; i++){
       r -= weights[i];
       if(r <= 0) return i;
@@ -1086,14 +1179,16 @@
       showTutorialHint();
       return;
     }
-    // ラン中に1回だけ、複数路線が同時に荒れる「ラッシュ」の山場を用意する。
-    // 単調に増えていくだけの難易度カーブに、狙って乗り越える瞬間を作る。
-    if(!state.tutorialActive && !state.rushEventDone){
+    // 複数路線が同時に荒れる「ラッシュ」の山場を用意する。タイミングは
+    // ラン開始時に揺らぎ付きで決めてあり（scheduleRushEvents）、長く生き
+    // 残るほど2回目のより厳しいラッシュも来る。単調に増えていくだけの
+    // 難易度カーブに、狙って乗り越える瞬間を作る。
+    if(!state.tutorialActive && state.rushEventsDone < state.rushSchedule.length){
       const elapsedSec = (nowMs - state.startedAt)/1000;
-      const rushAt = gameMode === "light" ? 150 : 190;
-      if(elapsedSec >= rushAt){
-        state.rushEventDone = true;
-        triggerRushEvent(nowMs);
+      if(elapsedSec >= state.rushSchedule[state.rushEventsDone]){
+        const severe = state.rushEventsDone >= 1;
+        state.rushEventsDone++;
+        triggerRushEvent(nowMs, severe);
         state.lastSpawn = nowMs;
         return;
       }
@@ -1105,7 +1200,7 @@
       return def.depts.every(dep=>!state.reserved.has(dep));
     });
     if(pool.length === 0) return;
-    const id = pool[Math.floor(Math.random()*pool.length)];
+    const id = pool[Math.floor(rand()*pool.length)];
     spawnTrouble(id, nowMs);
     state.lastSpawn = nowMs;
     // シミュレーションで検証した値：これより緩いと複数路線が同時に
@@ -1116,7 +1211,7 @@
 
   function spawnTrouble(id, nowMs, forcedLineIdx){
     const def = TROUBLE_MAP[id];
-    const variant = def.variants[Math.floor(Math.random()*def.variants.length)];
+    const variant = def.variants[Math.floor(rand()*def.variants.length)];
     const lineIdx = forcedLineIdx!==undefined ? forcedLineIdx : pickWeightedLine(id);
     // 路線ごとの個性（新幹線は判断時間が短い代わりに得点倍率が高い等）を反映
     const timeLimit = def.timeLimit * (LINES[lineIdx].timeLimitMult || 1);
@@ -1127,19 +1222,34 @@
     playSfx("horn", 0.55);
     if(LINES[lineIdx].id === "shinkansen") playSfx("shinkansenRunning", 0.4);
     if(state.tutorialActive) state.tutorialTroubleUid = instance.uid;
+    return instance;
+  }
+
+  // ラッシュの発生タイミングをラン開始時に決める。固定秒数だと2周目以降
+  // 「そろそろ来るぞ」と身構えられてしまうので±30秒の揺らぎを持たせ、
+  // 長く生き残ったプレイヤー向けに2回目（より厳しい）も用意する。
+  function scheduleRushEvents(){
+    const base1 = gameMode === "light" ? 150 : 190;
+    const gap2 = gameMode === "light" ? 170 : 200;
+    const jitter = ()=> (rand()*60 - 30);
+    const t1 = base1 + jitter();
+    const t2 = t1 + gap2 + jitter();
+    state.rushSchedule = [t1, t2];
+    state.rushEventsDone = 0;
   }
 
   // 路線を止めるトラブルの中から、路線・部署が被らない範囲で複数件を
-  // 一斉に発生させる「ラッシュ」演出。1ランに1回だけ発生する。
-  function triggerRushEvent(nowMs){
+  // 一斉に発生させる「ラッシュ」演出。severe=trueの2回目はさらに1件多く発生する。
+  function triggerRushEvent(nowMs, severe){
     const elapsedSec = (nowMs - state.startedAt)/1000;
     const pool = troublePoolFor(elapsedSec).filter(id=>TROUBLE_MAP[id].critical.length>0);
     if(pool.length === 0) return;
-    const targetCount = gameMode === "light" ? 2 : 3;
+    const baseCount = gameMode === "light" ? 2 : 3;
+    const targetCount = Math.min(LINES.length, baseCount + (severe ? 1 : 0));
     const usedLines = new Set();
     const usedDepts = new Set();
     let spawned = 0;
-    shuffled(pool).forEach(id=>{
+    shuffled(pool, rand).forEach(id=>{
       if(spawned >= targetCount) return;
       const def = TROUBLE_MAP[id];
       if(def.depts.some(dep=>usedDepts.has(dep) || state.reserved.has(dep))) return;
@@ -1152,11 +1262,12 @@
       if(usedLines.has(lineIdx)) return;
       usedLines.add(lineIdx);
       def.depts.forEach(dep=>usedDepts.add(dep));
-      spawnTrouble(id, nowMs, lineIdx);
+      const inst = spawnTrouble(id, nowMs, lineIdx);
+      state.rushTroubleUids.add(inst.uid);
       spawned++;
     });
     if(spawned > 0){
-      showRushBanner();
+      showRushBanner(severe);
       playSfx("horn", 0.7);
     }
   }
@@ -1169,10 +1280,11 @@
     el.tutorialHint.hidden = false;
   }
 
-  function shuffled(arr){
+  function shuffled(arr, rng){
+    const r = rng || Math.random;
     const a = arr.slice();
     for(let i=a.length-1; i>0; i--){
-      const j = Math.floor(Math.random()*(i+1));
+      const j = Math.floor(r()*(i+1));
       [a[i],a[j]] = [a[j],a[i]];
     }
     return a;
@@ -1347,6 +1459,7 @@
     const responseMs = performance.now() - t.startedAt;
     state.stats.dispatchCount++;
     state.stats.totalResponseMs += responseMs;
+    if(hadMistake && state.rushTroubleUids.has(t.uid)) state.rushHadMistake = true;
 
     freeTrouble(t);
     if(state.tutorialActive && t.uid === state.tutorialTroubleUid){
@@ -1367,10 +1480,15 @@
     if(!hadMistake){
       state.combo++;
       state.stats.perfectCount++;
+      state.stats.maxCombo = Math.max(state.stats.maxCombo, state.combo);
       state.score += Math.round((100 + Math.min(state.combo,10)*15) * scoreMult);
       trustDelta = wasCritical ? 4 + RECOVERY_BONUS : 4;
       flashCombo();
       playSfx(dispatchLine.id === "shinkansen" ? "shinkansenDepart" : "departBell", 0.5);
+      if(dispatchLine.id === "shinkansen"){
+        const total = Number(localStorage.getItem("tc_shinkansenPerfectTotal")||0) + 1;
+        localStorage.setItem("tc_shinkansenPerfectTotal", String(total));
+      }
       if(state.combo>0 && state.combo%3===0){
         showRadioToast(RADIO_PRAISES[Math.floor(Math.random()*RADIO_PRAISES.length)]);
       }
@@ -1445,8 +1563,10 @@
   }
 
   let rushBannerTimer = null;
-  function showRushBanner(){
+  function showRushBanner(severe){
     clearTimeout(rushBannerTimer);
+    el.rushBanner.querySelector(".rb-title").textContent = severe ? "⚠⚠ 大規模ラッシュ発生" : "⚠ ラッシュ発生";
+    el.rushBanner.querySelector(".rb-sub").textContent = severe ? "複数路線で大規模に同時多発中" : "複数路線で同時多発中";
     el.rushBanner.hidden = false;
     requestAnimationFrame(()=>el.rushBanner.classList.add("show"));
     rushBannerTimer = setTimeout(()=>{
@@ -1545,6 +1665,19 @@
       el.bestScoreNote.hidden = true;
     }
 
+    if(state.dailyMode){
+      const today = todayKey();
+      const saved = JSON.parse(localStorage.getItem("tc_dailyBest") || "null");
+      const dailyBest = (saved && saved.date === today) ? saved.score : 0;
+      if(finalScore > dailyBest){
+        localStorage.setItem("tc_dailyBest", JSON.stringify({date:today, score:finalScore}));
+      }
+      el.resultDailyNote.textContent = "本日の指令チャレンジ（"+today+"）／本日のベスト: "+Math.max(finalScore, dailyBest);
+      el.resultDailyNote.hidden = false;
+    } else {
+      el.resultDailyNote.hidden = true;
+    }
+
     const dc = state.stats.dispatchCount;
     const accuracy = dc>0 ? state.stats.perfectCount/dc : 0;
     const avgResponseMs = dc>0 ? state.stats.totalResponseMs/dc : 0;
@@ -1552,10 +1685,25 @@
     const safetyScore = state.stats.minTrust/100;
     drawRadarChart(el.radarCanvas, ["安全性","迅速性","正確性"], [safetyScore, speedScore, accuracy]);
 
-    el.resultRank.textContent = "階級：" + rankFor(finalScore).label;
+    const rankTier = rankFor(finalScore);
+    el.resultRank.textContent = "階級：" + rankTier.label;
     el.resultStatsLine.textContent = dc>0
       ? "対応件数 "+dc+"件（完璧対応 "+Math.round(accuracy*100)+"%）"
       : "対応件数 0件";
+
+    const badgeResult = checkBadges({
+      survivalSec, dispatchCount:dc, perfectCount:state.stats.perfectCount,
+      maxCombo: state.stats.maxCombo,
+      rankIndex: RANK_TIERS.indexOf(rankTier),
+      rushCleared: state.rushEventsDone>0 && !state.rushHadMistake,
+      shinkansenPerfectTotal: Number(localStorage.getItem("tc_shinkansenPerfectTotal")||0)
+    });
+    el.resultBadges.innerHTML = BADGES.map(b=>{
+      const isUnlocked = badgeResult.unlocked.has(b.id);
+      const isNew = badgeResult.newlyUnlocked.some(nb=>nb.id===b.id);
+      return '<span class="badge-chip'+(isUnlocked?" unlocked":"")+(isNew?" new":"")+'" title="'+b.label+'">'+
+        b.icon+' '+b.label+(isNew?'<span class="badge-new-tag">NEW</span>':'')+'</span>';
+    }).join("");
 
     el.gameOverFlash.style.transition = "none";
     el.gameOverFlash.style.opacity = "0.8";
@@ -1727,6 +1875,30 @@
   window.addEventListener("load", pinScroll);
   window.addEventListener("orientationchange", pinScroll);
   window.addEventListener("resize", pinScroll);
+
+  // 路線図の電車をタップすると小さなボーナスが入る、見るだけでない
+  // ちょっとした操作要素。連打防止に編成ごとクールダウンを設ける。
+  const TRAIN_TAP_RADIUS = 26;
+  const TRAIN_TAP_COOLDOWN_MS = 6000;
+  el.canvas.addEventListener("pointerdown", (evt)=>{
+    if(!state.running) return;
+    const rect = el.canvas.getBoundingClientRect();
+    const px = evt.clientX - rect.left, py = evt.clientY - rect.top;
+    const nowMs = performance.now();
+    let best = null, bestDist = TRAIN_TAP_RADIUS;
+    state.trains.forEach(tr=>{
+      if(tr.px === undefined) return;
+      const d = Math.hypot(tr.px - px, tr.py - py);
+      if(d < bestDist){ bestDist = d; best = tr; }
+    });
+    if(!best) return;
+    if(best.tapCooldownUntil && nowMs < best.tapCooldownUntil) return;
+    best.tapCooldownUntil = nowMs + TRAIN_TAP_COOLDOWN_MS;
+    state.score += 15;
+    state.trust = Math.min(100, state.trust + 1);
+    state.tapEffects.push({ x:best.px, y:best.py, startMs:nowMs });
+    playSfx("pass1", 0.3);
+  });
 
   // vh/dvhの解釈やCSSカスタムプロパティ(var())の対応状況はブラウザに
   // よって割れており、#appの高さが実際のビューポートより大きく計算
@@ -1945,7 +2117,25 @@
         if(t < 0 || t > 1) continue;
         const p = pointAtT(ray, t);
         drawGlowDot(p.x, p.y, k===0?4.5:(k===1?3.6:2.8), color);
+        // 先頭の光点の座標を控えておき、タップ操作の当たり判定に使う
+        if(k===0){ tr.px = p.x; tr.py = p.y; }
       }
+    });
+
+    // 電車タップ演出：タップした地点から一瞬リングが広がって消える
+    state.tapEffects = state.tapEffects.filter(fx=>{
+      const age = nowMs - fx.startMs;
+      if(age > 420) return false;
+      const ft = age/420;
+      ctx.save();
+      ctx.globalAlpha = 1 - ft;
+      ctx.strokeStyle = "#ffffff";
+      ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.arc(fx.x, fx.y, 6 + ft*20, 0, Math.PI*2);
+      ctx.stroke();
+      ctx.restore();
+      return true;
     });
 
     // トラブル演出（アイコン＋火花／雷フラッシュ）：該当路線の中間に表示
@@ -2014,6 +2204,10 @@
 
   // ============ 開始・リトライ ============
   function resetState(){
+    // デイリー挑戦は毎回同じ日付シードから再スタートする（リトライも含む）。
+    // そうしないとRNGの消費量がプレイ内容に応じてズレ、全員が同じ条件を
+    // 比較できるという前提が崩れてしまう。
+    seedRng(state.dailyMode ? hashStr(todayKey()) : null);
     state.running = true;
     state.startedAt = performance.now();
     state.trust = 100;
@@ -2029,13 +2223,16 @@
     state.resources = { spareTrain:RESOURCE_MAX, spareCrew:RESOURCE_MAX, lastRegenAt:performance.now() };
     state.lineRisk = LINES.map(()=>0);
     state.lastRiskDecayAt = performance.now();
-    state.stats = { dispatchCount:0, perfectCount:0, totalResponseMs:0, minTrust:100 };
+    state.stats = { dispatchCount:0, perfectCount:0, totalResponseMs:0, minTrust:100, maxCombo:0 };
     state.tutorialActive = !localStorage.getItem("tc_tutorialDone");
     state.tutorialTroubleUid = null;
     state.dispatchQueue = [];
     state.dispatchOverlayUid = null;
     state.prevCritical = LINES.map(()=>false);
-    state.rushEventDone = false;
+    state.rushTroubleUids = new Set();
+    state.rushHadMistake = false;
+    state.tapEffects = [];
+    scheduleRushEvents();
     stopAllSfx();
     updateAmbient();
     clearTimeout(cutinTimer);
@@ -2054,12 +2251,14 @@
   }
 
   function startGame(mode){
-    setLineMode(mode);
+    state.dailyMode = mode === "daily";
+    setLineMode(state.dailyMode ? "full" : mode);
     el.startOverlay.hidden = true;
     resetState();
   }
   el.startBtnFull.addEventListener("click", ()=>startGame("full"));
   el.startBtnLight.addEventListener("click", ()=>startGame("light"));
+  el.startBtnDaily.addEventListener("click", ()=>startGame("daily"));
   el.retryBtn.addEventListener("click", ()=>{
     el.gameOverOverlay.hidden = true;
     resetState();
@@ -2077,6 +2276,13 @@
   if(bestScoreAtLoad > 0){
     el.bestScoreLine.textContent = "自己ベストスコア: "+bestScoreAtLoad;
     el.bestScoreLine.hidden = false;
+  }
+
+  el.dailyDateLabel.textContent = todayKey();
+  const dailyAtLoad = JSON.parse(localStorage.getItem("tc_dailyBest") || "null");
+  if(dailyAtLoad && dailyAtLoad.date === todayKey()){
+    el.dailyBestLine.textContent = "本日のベスト: "+dailyAtLoad.score;
+    el.dailyBestLine.hidden = false;
   }
 
   // ============ 雰囲気演出（ゲーム進行には無関係） ============
