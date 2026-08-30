@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
 <title>指令室 - 運行管理ゲーム</title>
 <style>
   :root{
@@ -28,6 +28,10 @@
     background:var(--bg); color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
     overflow:hidden; -webkit-tap-highlight-color:transparent; user-select:none;
+    /* iOS Safariはoverflow:hiddenだけだとタッチ操作でページ自体が
+       ラバーバンドしてずれ、ヘッダーが画面外に隠れることがあるため、
+       viewportに完全固定して動かないようにする */
+    position:fixed; inset:0; width:100%; overscroll-behavior:none;
   }
   #app{
     display:flex; flex-direction:column; height:100vh; height:100dvh;
@@ -38,7 +42,7 @@
   /* ---- header ---- */
   #header{
     display:flex; align-items:center; gap:10px;
-    padding:8px 12px; background:var(--panel);
+    padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:var(--panel);
     border-bottom:1px solid var(--border); flex:0 0 auto; z-index:5;
   }
   .stat{display:flex; flex-direction:column; gap:2px; flex:0 0 auto;}
