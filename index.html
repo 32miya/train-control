@@ -2,7 +2,7 @@
 <html lang="ja">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
 <title>指令室 - 運行管理ゲーム</title>
 <style>
   :root{
@@ -37,7 +37,11 @@
     overscroll-behavior:none;
   }
   #app{
-    display:flex; flex-direction:column; height:100vh; height:100dvh;
+    display:flex; flex-direction:column;
+    /* vh/dvhはブラウザによってアドレスバー分の扱いが割れて信頼できないため、
+       JS側でwindow.innerHeightを実測した値（--app-height）を最優先で使う。
+       未対応ブラウザ向けのフォールバックとしてvh/dvhもこの順で残す。 */
+    height:100vh; height:100dvh; height:var(--app-height, 100dvh);
     max-width:520px; margin:0 auto; position:relative;
     background:radial-gradient(ellipse at top, #101830 0%, var(--bg) 70%);
   }
@@ -45,7 +49,7 @@
   /* ---- header ---- */
   #header{
     display:flex; align-items:center; gap:10px;
-    padding:calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; background:var(--panel);
+    padding:8px 12px; background:var(--panel);
     border-bottom:1px solid var(--border); flex:0 0 auto; z-index:5;
   }
   .stat{display:flex; flex-direction:column; gap:2px; flex:0 0 auto;}
@@ -1720,6 +1724,18 @@
   window.addEventListener("load", pinScroll);
   window.addEventListener("orientationchange", pinScroll);
   window.addEventListener("resize", pinScroll);
+
+  // vh/dvhの解釈はブラウザ間で割れており（特に一部スマホブラウザの
+  // アドレスバー分の扱い）、#appの高さが実際のビューポートより大きく
+  // 計算されてヘッダーごと画面外に押し出されるケースがある。
+  // window.innerHeightを直接測って--app-heightに反映し、CSS側で最優先する。
+  function setAppHeight(){
+    document.documentElement.style.setProperty("--app-height", window.innerHeight + "px");
+  }
+  setAppHeight();
+  window.addEventListener("load", setAppHeight);
+  window.addEventListener("resize", setAppHeight);
+  window.addEventListener("orientationchange", ()=>setTimeout(setAppHeight, 100));
 
   const IMG = {};
   function loadImg(key, src){ const i = new Image(); i.src = src; IMG[key] = i; return i; }
