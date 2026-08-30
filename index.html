@@ -1725,11 +1725,14 @@
   window.addEventListener("orientationchange", pinScroll);
   window.addEventListener("resize", pinScroll);
 
-  // vh/dvhの解釈はブラウザ間で割れており（特に一部スマホブラウザの
-  // アドレスバー分の扱い）、#appの高さが実際のビューポートより大きく
-  // 計算されてヘッダーごと画面外に押し出されるケースがある。
-  // window.innerHeightを直接測って--app-heightに反映し、CSS側で最優先する。
+  // vh/dvhの解釈やCSSカスタムプロパティ(var())の対応状況はブラウザに
+  // よって割れており、#appの高さが実際のビューポートより大きく計算
+  // されてヘッダーごと画面外に押し出されるケースがある。var()経由では
+  // なく#app要素のstyle.heightに直接pxを書き込むことで、CSSの解釈に
+  // 依存しない最も確実な方法で高さを固定する。
+  const appEl = document.getElementById("app");
   function setAppHeight(){
+    if(appEl) appEl.style.height = window.innerHeight + "px";
     document.documentElement.style.setProperty("--app-height", window.innerHeight + "px");
   }
   setAppHeight();
