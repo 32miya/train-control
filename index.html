@@ -156,16 +156,19 @@
     pointer-events:none;
   }
   #radioToast.show{ opacity:1; transform:translateY(0); }
+  /* 指令発令の結果（成功／運行再開／ミス）を路線図の中央に大きく表示する */
   #dispatchResultToast{
-    position:absolute; left:8px; right:8px; top:8px; z-index:13;
-    background:#0a1424ee; border-left:3px solid var(--good); border-radius:6px;
-    padding:6px 10px; font-size:12px; font-weight:700; color:var(--text);
-    opacity:0; transform:translateY(-6px); transition:opacity .25s, transform .25s;
+    position:absolute; left:8%; right:8%; top:50%; z-index:15;
+    background:#0a1424f2; border:2px solid var(--good); border-radius:16px;
+    padding:16px 18px; text-align:center; box-shadow:0 8px 28px #000a;
+    font-size:17px; font-weight:900; color:#fff; line-height:1.45;
+    opacity:0; transform:translateY(-50%) scale(0.88);
+    transition:opacity .2s, transform .2s;
     pointer-events:none;
   }
-  #dispatchResultToast.show{ opacity:1; transform:translateY(0); }
-  #dispatchResultToast.warn{ border-left-color:var(--warn); }
-  #dispatchResultToast.bad{ border-left-color:var(--danger); }
+  #dispatchResultToast.show{ opacity:1; transform:translateY(-50%) scale(1); }
+  #dispatchResultToast.warn{ border-color:var(--warn); }
+  #dispatchResultToast.bad{ border-color:var(--danger); }
 
   /* ---- ラン中に1回だけ発生する「ラッシュ」演出 ---- */
   #rushBanner{
@@ -1415,7 +1418,7 @@
     }, 1800);
   }
 
-  // 指令発令1件ごとの成否（成功／運行再開／ミス）を路線図上部に一瞬表示する
+  // 指令発令1件ごとの成否（成功／運行再開／ミス）を路線図中央に大きく一瞬表示する
   let dispatchResultTimer = null;
   function showResultToast(text, kind){
     clearTimeout(dispatchResultTimer);
@@ -1426,7 +1429,7 @@
     dispatchResultTimer = setTimeout(()=>{
       el.dispatchResultToast.classList.remove("show");
       setTimeout(()=>{ el.dispatchResultToast.hidden = true; }, 250);
-    }, 2000);
+    }, 2200);
   }
 
   // 信頼度バーの脇に +N / -N を一瞬浮かせて、増減をひと目でわかるようにする
