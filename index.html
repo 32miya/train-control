@@ -23,15 +23,18 @@
     --passenger:#f06292;
   }
   *{box-sizing:border-box;}
-  html,body{
+  html{ height:100%; overflow:hidden; }
+  body{
     margin:0; padding:0; height:100%;
     background:var(--bg); color:var(--text);
     font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",sans-serif;
     overflow:hidden; -webkit-tap-highlight-color:transparent; user-select:none;
-    /* iOS Safariはoverflow:hiddenだけだとタッチ操作でページ自体が
-       ラバーバンドしてずれ、ヘッダーが画面外に隠れることがあるため、
-       viewportに完全固定して動かないようにする */
-    position:fixed; inset:0; width:100%; overscroll-behavior:none;
+    /* スマホブラウザ（特にiOS SafariやAndroidの一部組み込みブラウザ）は
+       overflow:hiddenだけだとタッチ操作でページ自体がラバーバンドして
+       ずれ、ヘッダーが画面外に隠れることがあるため、bodyをviewportに
+       完全固定する（inset省略記法は互換性のためtop/left/right/bottomで指定） */
+    position:fixed; top:0; left:0; right:0; bottom:0; width:100%;
+    overscroll-behavior:none;
   }
   #app{
     display:flex; flex-direction:column; height:100vh; height:100dvh;
@@ -42,7 +45,7 @@
   /* ---- header ---- */
   #header{
     display:flex; align-items:center; gap:10px;
-    padding:calc(8px + env(safe-area-inset-top)) 12px 8px; background:var(--panel);
+    padding:calc(8px + env(safe-area-inset-top, 0px)) 12px 8px; background:var(--panel);
     border-bottom:1px solid var(--border); flex:0 0 auto; z-index:5;
   }
   .stat{display:flex; flex-direction:column; gap:2px; flex:0 0 auto;}
@@ -1704,6 +1707,19 @@
     ctx.setTransform(dpr,0,0,dpr,0,0);
   }
   window.addEventListener("resize", resizeCanvas);
+
+  // 一部のスマホブラウザはCSSのposition:fixedだけではページの
+  // ラバーバンドスクロールを止めきれず、ヘッダーが画面外にずれることが
+  // ある。トラブル一覧やモーダル内などスクロールが必要な要素の外側では
+  // touchmoveそのものを無効化し、確実にページ全体を動かなくする。
+  document.addEventListener("touchmove", function(e){
+    if(e.target.closest("#troubleList, .overlay .card")) return;
+    e.preventDefault();
+  }, { passive:false });
+  function pinScroll(){ window.scrollTo(0,0); }
+  window.addEventListener("load", pinScroll);
+  window.addEventListener("orientationchange", pinScroll);
+  window.addEventListener("resize", pinScroll);
 
   const IMG = {};
   function loadImg(key, src){ const i = new Image(); i.src = src; IMG[key] = i; return i; }
