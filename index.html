@@ -1279,10 +1279,11 @@
     const id = pool[Math.floor(rand()*pool.length)];
     spawnTrouble(id, nowMs);
     state.lastSpawn = nowMs;
-    // シミュレーションで検証した値：これより緩いと複数路線が同時に
-    // 荒れる場面がほぼ発生しない（体感で「1件ずつ順番に来る」ゲームになる）
-    const floor = gameMode === "light" ? 5500 : 3200;
-    state.spawnInterval = Math.max(floor, state.spawnInterval - 350);
+    // 実プレイヤーから「速すぎて何が起きているか読めない」との声を受けて
+    // 下限を緩め、減衰も穏やかにした（多重発生はラッシュイベントに任せ、
+    // 通常時の間隔はしっかり読める速さを優先する）
+    const floor = gameMode === "light" ? 7500 : 4800;
+    state.spawnInterval = Math.max(floor, state.spawnInterval - 250);
   }
 
   function spawnTrouble(id, nowMs, forcedLineIdx){
@@ -1338,6 +1339,12 @@
 
   // 路線を止めるトラブルの中から、路線・部署が被らない範囲で複数件を
   // 一斉に発生させる「ラッシュ」演出。severe=trueの2回目はさらに1件多く発生する。
+  // ラッシュで選ばれたトラブルをまとめて発生させると、カットインや状況が
+  // 一瞬で積み重なって読めなくなるため、対象を先に選び切ってから少し
+  // ずつ間隔を空けて発生させる（選定自体はここで同期的に行うのでdaily
+  // モードの決定性には影響しない）
+  let pendingRushTimers = [];
+  const RUSH_SPAWN_STAGGER_MS = 1400;
   function triggerRushEvent(nowMs, severe){
     const elapsedSec = (nowMs - state.startedAt)/1000;
     const pool = troublePoolFor(elapsedSec).filter(id=>TROUBLE_MAP[id].critical.length>0);
@@ -1346,9 +1353,9 @@
     const targetCount = Math.min(LINES.length, baseCount + (severe ? 1 : 0));
     const usedLines = new Set();
     const usedDepts = new Set();
-    let spawned = 0;
+    const picks = [];
     shuffled(pool, rand).forEach(id=>{
-      if(spawned >= targetCount) return;
+      if(picks.length >= targetCount) return;
       const def = TROUBLE_MAP[id];
       if(def.depts.some(dep=>usedDepts.has(dep) || state.reserved.has(dep))) return;
       let lineIdx = pickWeightedLine(id);
@@ -1360,14 +1367,22 @@
       if(usedLines.has(lineIdx)) return;
       usedLines.add(lineIdx);
       def.depts.forEach(dep=>usedDepts.add(dep));
-      const inst = spawnTrouble(id, nowMs, lineIdx);
-      state.rushTroubleUids.add(inst.uid);
-      spawned++;
+      picks.push({ id, lineIdx });
     });
-    if(spawned > 0){
-      showRushBanner(severe);
-      playSfx("alarm", 0.75);
-    }
+    if(picks.length === 0) return;
+    showRushBanner(severe);
+    playSfx("alarm", 0.75);
+    picks.forEach((p, i)=>{
+      const timerId = setTimeout(()=>{
+        if(!state.running) return;
+        const def = TROUBLE_MAP[p.id];
+        // 段階発生の間に他の要因で部署が埋まっていたら、この1件だけ諦める
+        if(def.depts.some(dep=>state.reserved.has(dep))) return;
+        const inst = spawnTrouble(p.id, performance.now(), p.lineIdx);
+        state.rushTroubleUids.add(inst.uid);
+      }, i * RUSH_SPAWN_STAGGER_MS);
+      pendingRushTimers.push(timerId);
+    });
   }
 
   function showTutorialHint(){
@@ -1388,18 +1403,35 @@
     return a;
   }
 
+  // カットインは以前「新しいトラブルが来ると前のカットインを即座に
+  // 上書きする」実装で、ラッシュ演出などで複数件が一瞬で連続発生すると
+  // 内容を全く読めないまま切り替わってしまう問題があった。キューに
+  // 積んで1件ずつ順番に、確実に読める時間だけ表示する。
   let cutinTimer = null;
+  let cutinQueue = [];
+  let cutinShowing = false;
   function showCutin(def, line, variant){
-    clearTimeout(cutinTimer);
-    // 状況バリアントごとに専用のカットイン画像がある場合はそちらを優先する
-    el.cutinImg.src = (variant && variant.cutinImg) || def.cutinImg;
-    el.cutinName.textContent = line.name+" - "+def.name;
+    cutinQueue.push({
+      src: (variant && variant.cutinImg) || def.cutinImg,
+      name: line.name+" - "+def.name
+    });
+    if(!cutinShowing) advanceCutinQueue();
+  }
+  function advanceCutinQueue(){
+    if(cutinQueue.length === 0){ cutinShowing = false; return; }
+    cutinShowing = true;
+    const item = cutinQueue.shift();
+    el.cutinImg.src = item.src;
+    el.cutinName.textContent = item.name;
     el.cutinOverlay.hidden = false;
     requestAnimationFrame(()=>el.cutinOverlay.classList.add("show"));
     cutinTimer = setTimeout(()=>{
       el.cutinOverlay.classList.remove("show");
-      setTimeout(()=>{ el.cutinOverlay.hidden = true; }, 200);
-    }, 1600);
+      setTimeout(()=>{
+        el.cutinOverlay.hidden = true;
+        advanceCutinQueue();
+      }, 200);
+    }, 2200);
   }
 
   function freeTrouble(instance){
@@ -2400,7 +2432,7 @@
     state.active = [];
     troubleCardRefs.forEach(refs=>refs.card.remove());
     troubleCardRefs.clear();
-    state.spawnInterval = gameMode === "light" ? 14000 : 11000;
+    state.spawnInterval = gameMode === "light" ? 16000 : 13000;
     state.lastSpawn = performance.now();
     state.trains = makeTrains();
     state.combo = 0;
@@ -2422,9 +2454,13 @@
     state.lineInspectedUntil = LINES.map(()=>0);
     state.crewPreAssigned = new Set();
     scheduleRushEvents();
+    pendingRushTimers.forEach(id=>clearTimeout(id));
+    pendingRushTimers = [];
     stopAllSfx();
     updateAmbient();
     clearTimeout(cutinTimer);
+    cutinQueue = [];
+    cutinShowing = false;
     el.cutinOverlay.classList.remove("show");
     el.cutinOverlay.hidden = true;
     el.tutorialHint.hidden = true;
